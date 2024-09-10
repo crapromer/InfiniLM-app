@@ -79,6 +79,7 @@ import kotlinx.coroutines.withContext
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Face
 import androidx.documentfile.provider.DocumentFile
+import kotlin.system.measureTimeMillis
 
 object ServiceManager {
     private var isInitialized = false
@@ -158,30 +159,55 @@ fun chatScreen(modifier: Modifier){
     var message by remember { mutableStateOf("") }
     var messages by remember { mutableStateOf(emptyList<Message>()) }
     var isButtonEnabled by remember { mutableStateOf(true) }
+    val context = LocalContext.current
+
     fun onSubmit() {
         // 开始异步任务
         isButtonEnabled = false
         CoroutineScope(Dispatchers.IO).launch {
             if (message.isNotEmpty()) {
-                messages += Message(message,true)
-                Native.start(message)
+                //Native.start(message)
+                val startTime = measureTimeMillis {
+                    Native.start(message)
+                }
+                messages += Message("$message\nprefill耗时: ${startTime}ms", true)
                 message = ""
             }
             var botMessage = Message("", false)
             messages += botMessage
+            var decodeCount = 0
+            var totalDecodeTime = 0L
             while (true) {
-                val text = Native.decode()
+                val text: String
+                val decodeTime = measureTimeMillis {
+                    text = Native.decode()
+                }
+
                 if (text.isEmpty()) {
                     break
-                }else{
+                } else {
                     withContext(Dispatchers.Main) {
                         botMessage = botMessage.copy(text = botMessage.text + text)
-                        // 更新消息列表中的最后一条消息
+                        //messages[messages.size - 1] = botMessage
                         messages = messages.dropLast(1) + botMessage
                     }
                 }
+                totalDecodeTime += decodeTime
+                decodeCount++
+
+                // 记录单次 decode 耗时
+
             }
 
+            if (decodeCount > 0) {
+                val avgDecodeTime = totalDecodeTime / decodeCount
+                botMessage = botMessage.copy(text = botMessage.text + "\ndecode平均耗时: ${avgDecodeTime}ms")
+                withContext(Dispatchers.Main) {
+                    //messages[messages.size - 1] = botMessage
+                    messages = messages.dropLast(1) + botMessage
+
+                }
+            }
             // 任务完成，恢复按钮可点击状态
             withContext(Dispatchers.Main) {
                 isButtonEnabled = true
