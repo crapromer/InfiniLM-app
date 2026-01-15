@@ -29,6 +29,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -55,8 +56,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -78,6 +83,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Close
 import androidx.documentfile.provider.DocumentFile
 import kotlin.system.measureTimeMillis
 
@@ -111,13 +119,22 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             LmAndroidTheme {
+                var showModelDialog by remember { mutableStateOf(false) }
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),
                     topBar = {
-                        titleBar(name = "Chat")
+                        titleBar(
+                            name = "Chat",
+                            onModelButtonClick = { showModelDialog = true }
+                        )
                     },
                     content = {paddingValues ->
-                        mainAPP(Modifier.padding(paddingValues))
+                        mainAPP(
+                            Modifier.padding(paddingValues),
+                            showModelDialog = showModelDialog,
+                            onDismissDialog = { showModelDialog = false },
+                            onShowDialog = { showModelDialog = true }
+                        )
                     }
                 )
             }
@@ -142,7 +159,7 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun titleBar(name: String) {
+fun titleBar(name: String, onModelButtonClick: () -> Unit) {
     TopAppBar(
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -150,6 +167,17 @@ fun titleBar(name: String) {
         ),
         title = {
             Text("九格大模型")
+        },
+        actions = {
+            TextButton(onClick = onModelButtonClick) {
+                Icon(
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = "选择模型",
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("选择模型")
+            }
         }
     )
 }
@@ -298,7 +326,7 @@ fun chatPreview() {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
             topBar = {
-                titleBar(name = "Chat")
+                titleBar(name = "Chat", onModelButtonClick = {})
             },
             content = {paddingValues ->
                 chatScreen(Modifier.padding(paddingValues))
@@ -308,19 +336,28 @@ fun chatPreview() {
 }
 
 @Composable
-fun mainAPP(modifier: Modifier) {
+fun mainAPP(
+    modifier: Modifier,
+    showModelDialog: Boolean,
+    onDismissDialog: () -> Unit,
+    onShowDialog: () -> Unit
+) {
     val context = LocalContext.current
     val sharedPreferences = context.getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
-    var showDialog by remember { mutableStateOf(false) }
     var modelFolderPath by remember { mutableStateOf<String>("") }
+    var isInitialized by remember { mutableStateOf(false) }
 
-    val savedFolderPath = sharedPreferences.getString("defaultModelFolder", "")
-
-    if (savedFolderPath != "" && isValidFolder(savedFolderPath)) {
-        Log.i("model path",savedFolderPath.toString() )
-        modelFolderPath = savedFolderPath.toString()
-    } else {
-        showDialog = true
+    // 初始化时加载已保存的模型路径
+    LaunchedEffect(Unit) {
+        val savedFolderPath = sharedPreferences.getString("defaultModelFolder", "")
+        if (savedFolderPath != null && savedFolderPath.isNotEmpty() && isValidFolder(savedFolderPath)) {
+            Log.i("model path", savedFolderPath)
+            modelFolderPath = savedFolderPath
+            ServiceManager.initialize(modelFolderPath)
+            isInitialized = true
+        } else {
+            isInitialized = true
+        }
     }
 
     val folderPicker = rememberLauncherForActivityResult(
@@ -328,53 +365,150 @@ fun mainAPP(modifier: Modifier) {
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             result.data?.data?.let { uri ->
-                modelFolderPath = getAbsolutePathFromUri(context, uri)
-                Log.i("model path",modelFolderPath )
-                sharedPreferences.edit().putString("defaultModelFolder", modelFolderPath).apply()
-                showDialog = false
+                val newPath = getAbsolutePathFromUri(context, uri)
+                if (newPath.isNotEmpty()) {
+                    modelFolderPath = newPath
+                    Log.i("model path", modelFolderPath)
+                    sharedPreferences.edit().putString("defaultModelFolder", modelFolderPath).apply()
+                    ServiceManager.initialize(modelFolderPath)
+                    Toast.makeText(context, "模型加载成功", Toast.LENGTH_SHORT).show()
+                    onDismissDialog()
+                } else {
+                    Toast.makeText(context, "无法获取文件夹路径，请重试。", Toast.LENGTH_SHORT).show()
+                }
             }
-        }else {
-            Toast.makeText(context, "您选择的文件夹无效，请选择一个有效的文件夹。", Toast.LENGTH_SHORT).show()
         }
     }
 
-    if (showDialog) {
+    if (showModelDialog) {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
-        FolderSelectionDialog(onSelectFolder = { folderPicker.launch(intent) })
-    } else {
-        ServiceManager.initialize(modelFolderPath)
-        Toast.makeText(context, "模型加载成功", Toast.LENGTH_SHORT).show()
-        chatScreen(modifier)
+        FolderSelectionDialog(
+            currentPath = modelFolderPath,
+            onSelectFolder = { folderPicker.launch(intent) },
+            onDismiss = onDismissDialog
+        )
     }
-
+    
+    chatScreen(modifier)
 }
 
 @Composable
-fun FolderSelectionDialog(onSelectFolder: () -> Unit) {
-    Dialog(onDismissRequest = { /* 禁止关闭 */ }) {
+fun FolderSelectionDialog(
+    currentPath: String,
+    onSelectFolder: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
         Surface(
             shape = MaterialTheme.shapes.medium,
             color = MaterialTheme.colorScheme.background,
-            modifier = Modifier.padding(16.dp)
+            modifier = Modifier
+                .fillMaxWidth(0.9f)
+                .padding(16.dp)
         ) {
-            Box(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 16.dp),
-                contentAlignment = Alignment.Center
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally // 水平居中
+                // 标题
+                Text(
+                    text = "模型权重文件夹设置",
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold
+                    ),
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+                
+                // 当前路径显示区域
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                    ),
+                    elevation = CardDefaults.cardElevation(2.dp)
                 ) {
-                    Text("请选择模型文件夹",
-                        modifier = Modifier.padding(bottom = 8.dp),
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Normal
+                    Column(
+                        modifier = Modifier.padding(16.dp)
+                    ) {
+                        Text(
+                            text = "当前模型路径：",
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium
+                            ),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(bottom = 8.dp)
                         )
-                    )
-                    Button(onClick = onSelectFolder) {
-                        Text("选择模型文件夹")
+                        if (currentPath.isEmpty()) {
+                            Text(
+                                text = "未选择",
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontSize = 14.sp
+                                ),
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(start = 8.dp)
+                            )
+                            Text(
+                                text = "请选择模型权重文件夹",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontSize = 12.sp
+                                ),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                modifier = Modifier.padding(top = 4.dp, start = 8.dp)
+                            )
+                        } else {
+                            Text(
+                                text = currentPath,
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontSize = 14.sp
+                                ),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 8.dp),
+                                maxLines = 3,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+                
+                // 按钮区域
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Button(
+                        onClick = onSelectFolder,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Folder,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(if (currentPath.isEmpty()) "选择文件夹" else "更改文件夹")
+                    }
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("取消")
                     }
                 }
             }
